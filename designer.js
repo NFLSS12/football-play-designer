@@ -81,13 +81,37 @@ const state = {
 
 /* ─── Initialization ────────────────────────────────────────── */
 window.addEventListener('DOMContentLoaded', () => {
-  initFieldSvg();
-  initDefaultPlays();
-  bindUIEvents();
-  renderPresnapUI();
-  syncAiToggles();
-  renderAll();
+  try {
+    initFieldSvg();
+    initDefaultPlays();
+    bindUIEvents();
+    renderPresnapUI();
+    syncAiToggles();
+    renderAll();
+  } catch (err) {
+    console.error("Initialization Error:", err);
+    showInitializationError(err);
+  }
 });
+
+function showInitializationError(err) {
+  const existing = document.getElementById('initErrorBanner');
+  if (existing) return;
+  const banner = document.createElement('div');
+  banner.id = 'initErrorBanner';
+  banner.style.cssText = 'position:fixed; top:60px; left:50%; transform:translateX(-50%); z-index:99999; background:#7f1d1d; color:#fecaca; border:1px solid #ef4444; border-radius:8px; padding:12px 20px; font-size:0.85rem; max-width:90%; box-shadow:0 10px 25px rgba(0,0,0,0.7); text-align:center; font-family:sans-serif;';
+  banner.innerHTML = `
+    <b>⚠️ 初期化エラーが発生しました</b><br>
+    <span style="font-size:0.78rem; color:#fff;">${err.message || err}</span><br>
+    <div style="font-size:0.72rem; color:#fca5a5; margin-top:6px; line-height:1.4;">
+      【考えられる原因】<br>
+      ・<code>presets.js</code> が同じフォルダにアップロードされていない、またはファイル名の大文字小文字が異なる（GitHub Pagesは小文字厳格です）<br>
+      ・ZIPファイルを解凍せずに直接開いている（右クリックで「すべて展開」してください）
+    </div>
+    <button onclick="this.parentElement.remove()" style="margin-top:8px; background:#450a0a; color:#fecaca; border:1px solid #ef4444; border-radius:4px; padding:2px 10px; cursor:pointer; font-size:0.75rem;">閉じる</button>
+  `;
+  document.body.appendChild(banner);
+}
 
 function initDefaultPlays() {
   const loadReq = sessionStorage.getItem('load_play_request');
@@ -95,28 +119,70 @@ function initDefaultPlays() {
     try {
       const { type, id, isPreset } = JSON.parse(loadReq);
       sessionStorage.removeItem('load_play_request');
-      if (type === 'offense') {
-        if (isPreset && PRESETS.offense[id]) {
-          state.offensePlay = JSON.parse(JSON.stringify(PRESETS.offense[id]));
+      if (typeof PRESETS !== 'undefined') {
+        if (type === 'offense') {
+          if (isPreset && PRESETS.offense && PRESETS.offense[id]) {
+            state.offensePlay = JSON.parse(JSON.stringify(PRESETS.offense[id]));
+          } else {
+            const pb = getPlaybookData();
+            const found = pb.offense.find(x => x.id === id);
+            if (found) state.offensePlay = JSON.parse(JSON.stringify(found));
+          }
+          state.mode = 'offense';
         } else {
-          const pb = getPlaybookData();
-          const found = pb.offense.find(x => x.id === id);
-          if (found) state.offensePlay = JSON.parse(JSON.stringify(found));
+          if (isPreset && PRESETS.defense && PRESETS.defense[id]) {
+            state.defensePlay = JSON.parse(JSON.stringify(PRESETS.defense[id]));
+          } else {
+            const pb = getPlaybookData();
+            const found = pb.defense.find(x => x.id === id);
+            if (found) state.defensePlay = JSON.parse(JSON.stringify(found));
+          }
+          state.mode = 'defense';
         }
-        state.mode = 'offense';
-      } else {
-        if (isPreset && PRESETS.defense[id]) {
-          state.defensePlay = JSON.parse(JSON.stringify(PRESETS.defense[id]));
-        } else {
-          const pb = getPlaybookData();
-          const found = pb.defense.find(x => x.id === id);
-          if (found) state.defensePlay = JSON.parse(JSON.stringify(found));
-        }
-        state.mode = 'defense';
       }
     } catch (e) {
       console.error(e);
     }
+  }
+
+  // Fallback safety if PRESETS is missing or not yet loaded
+  if (typeof PRESETS === 'undefined' || !PRESETS.offense || !PRESETS.defense) {
+    showInitializationError(new Error("presets.js が読み込まれていません。presets.js と designer.js が同じフォルダに存在するか、ファイル名を確認してください。"));
+    state.offensePlay = {
+      id: 'fallback_offense',
+      name: 'Standard Spread (Fallback)',
+      players: [
+        { id: 'LT', type: 'OL', x: 42, y: 78.5, route: [] },
+        { id: 'LG', type: 'OL', x: 46, y: 78.5, route: [] },
+        { id: 'C',  type: 'C',  x: 50, y: 78.5, route: [] },
+        { id: 'RG', type: 'OL', x: 54, y: 78.5, route: [] },
+        { id: 'RT', type: 'OL', x: 58, y: 78.5, route: [] },
+        { id: 'QB', type: 'QB', x: 50, y: 83.5, route: [] },
+        { id: 'RB', type: 'RB', x: 46, y: 83.5, route: [{ x: 54, y: 64.5 }] },
+        { id: 'TE', type: 'TE', x: 62, y: 78.5, route: [{ x: 62, y: 65 }] },
+        { id: 'WR1',type: 'WR', x: 12, y: 78.5, route: [{ x: 12, y: 55 }] },
+        { id: 'WR2',type: 'WR', x: 88, y: 78.5, route: [{ x: 88, y: 55 }] },
+        { id: 'WR3',type: 'WR', x: 25, y: 78.5, route: [{ x: 25, y: 60 }] }
+      ]
+    };
+    state.defensePlay = {
+      id: 'fallback_defense',
+      name: 'Base 4-3 (Fallback)',
+      players: [
+        { id: 'LDE', type: 'DL', x: 40, y: 77.0, role: 'rush' },
+        { id: 'LDT', type: 'DL', x: 47, y: 77.0, role: 'rush' },
+        { id: 'RDT', type: 'DL', x: 53, y: 77.0, role: 'rush' },
+        { id: 'RDE', type: 'DL', x: 60, y: 77.0, role: 'rush' },
+        { id: 'WLB', type: 'LB', x: 38, y: 72.0, role: 'zone', zoneRadius: 6 },
+        { id: 'MLB', type: 'LB', x: 50, y: 72.0, role: 'zone', zoneRadius: 6 },
+        { id: 'SLB', type: 'LB', x: 62, y: 72.0, role: 'zone', zoneRadius: 6 },
+        { id: 'LCB', type: 'CB', x: 12, y: 71.0, role: 'man', manTarget: 'WR1' },
+        { id: 'RCB', type: 'CB', x: 88, y: 71.0, role: 'man', manTarget: 'WR2' },
+        { id: 'SS',  type: 'S',  x: 65, y: 63.0, role: 'zone', zoneRadius: 8 },
+        { id: 'FS',  type: 'S',  x: 35, y: 63.0, role: 'zone', zoneRadius: 8 }
+      ]
+    };
+    return;
   }
 
   if (!state.offensePlay) {
