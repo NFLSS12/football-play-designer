@@ -191,6 +191,10 @@ function initDefaultPlays() {
   if (!state.defensePlay) {
     state.defensePlay = JSON.parse(JSON.stringify(PRESETS.defense['4_3_cover2']));
   }
+  if (state.offensePlay) {
+    const origQB = state.offensePlay.players.find(p => p.type === 'QB');
+    if (origQB) origQB.isOriginalQB = true;
+  }
 
   const rb = state.offensePlay.players.find(p => p.type === 'RB');
   if (rb) state.ballCarrierId = rb.id;
@@ -446,6 +450,43 @@ function initFieldSvg() {
 }
 
 
+/**
+ * Resolves the primary Quarterback (initial ball-handler) for an offense play.
+ * If the QB was changed to another position (e.g. WR, RB), preserves the original QB player
+ * instead of falling back to players[0] (which is LT / OL).
+ */
+function getPrimaryQB(play = state.offensePlay) {
+  if (!play || !play.players || play.players.length === 0) return null;
+  // 1. Explicit QB type
+  const explicitQB = play.players.find(p => p.type === 'QB');
+  if (explicitQB) return explicitQB;
+
+  // 2. Player marked as original QB (persists after position change)
+  const markedQB = play.players.find(p => p.isOriginalQB);
+  if (markedQB) return markedQB;
+
+  // 3. Player with ID 'QB'
+  const idQB = play.players.find(p => p.id === 'QB');
+  if (idQB) return idQB;
+
+  // 4. Fallback: Find backfield player (non-OL) closest to center/snap
+  const nonOL = play.players.filter(p => p.type !== 'OL' && p.type !== 'C' && p.type !== 'OG' && p.type !== 'OT');
+  if (nonOL.length > 0) {
+    let best = nonOL[0];
+    let bestDist = 999;
+    nonOL.forEach(p => {
+      const d = Math.hypot(p.x - 50, p.y - 80);
+      if (d < bestDist) {
+        bestDist = d;
+        best = p;
+      }
+    });
+    return best;
+  }
+
+  return play.players[0];
+}
+
 /* ─── Render All ────────────────────────────────────────────── */
 function renderAll() {
   renderRoutesAndCoverage();
@@ -480,7 +521,7 @@ function resolvePassPlayState(t) {
     return null;
   }
 
-  const qb = state.offensePlay.players.find(p => p.type === 'QB') || state.offensePlay.players[0];
+  const qb = getPrimaryQB(state.offensePlay);
   const animDur = state.anim.duration || 5.0;
   let throwT = state.throwTime;
   let catchT = state.catchTime;
@@ -692,7 +733,8 @@ function createPlayerNode(p, side, pos) {
       const pass = state.resolvedPass || resolvePassPlayState(curT);
       const throwT = pass ? pass.throwT : (state.throwTime || 0.4);
       const catchT = pass ? pass.catchT : (state.catchTime || 0.6);
-      if (curT < throwT && p.type === 'QB') {
+      const primaryQB = getPrimaryQB();
+      if (curT < throwT && primaryQB && p.id === primaryQB.id) {
         hasBall = true;
       } else if (curT >= catchT && state.catchReceiverId === p.id) {
         hasBall = true;
@@ -806,13 +848,13 @@ function isEligiblePassReceiver(p, passerOrExcludeId = null) {
   // パサー自身、または除外対象IDは除外
   if (passerOrExcludeId && p.id === passerOrExcludeId) return false;
 
-  const qb = state.offensePlay ? state.offensePlay.players.find(x => x.type === 'QB') : null;
+  const qb = getPrimaryQB();
   const qbId = qb ? qb.id : null;
 
   // QBがレシーバーになれるか？
   // 「ランのパス時、QB以外がパスを投げるとき（トリックパス）」のみQBもパスターゲットになれる！
   // 通常パスプレイやRPO（QBがパサー）の時は絶対にQBはターゲットになれない。
-  if (p.id === qbId || p.type === 'QB') {
+  if (p.id === qbId || (qb && p.id === qb.id) || p.type === 'QB') {
     if (state.playType === 'pass') return false;
     // ランプレイ時: トリックパスでQB以外が投げる場合のみQBもターゲット可能
     const isTrickPass = state.runSequence && state.runSequence.some(s => s.type === 'pass' && s.from && s.from !== qbId);
@@ -849,7 +891,7 @@ function getSmartOpenReceiver(overrideThrowT, overrideCatchT, handOffTargetId) {
   if (catchT > 1.0) catchT = Math.min(0.95, catchT / animDur);
   if (catchT <= throwT) catchT = Math.min(0.95, throwT + 0.2);
 
-  const qb = state.offensePlay.players.find(p => p.type === 'QB') || state.offensePlay.players[0];
+  const qb = getPrimaryQB();
   const qbPos = getOffensePosAt(qb, throwT);
 
   const defPlayers = state.defensePlay ? state.defensePlay.players : [];
@@ -1002,7 +1044,7 @@ function calculateSmartCutbackOffset(p, t, basePos) {
 
 function getRunPlayBallCarrierAt(t) {
   if (!state.offensePlay) return null;
-  const qb = state.offensePlay.players.find(p => p.type === 'QB') || state.offensePlay.players[0];
+  const qb = getPrimaryQB();
   let currentHolder = qb;
   const exchangeTimes = (state.runExchangeTimes && state.runExchangeTimes.length === (state.runSequence ? state.runSequence.length : 0))
     ? state.runExchangeTimes
@@ -1079,7 +1121,7 @@ function getRunPlayBallCarrierAt(t) {
 
 function renderFootball(t, container) {
   if (t <= 0 || !state.offensePlay) return;
-  const qb = state.offensePlay.players.find(p => p.type === 'QB') || state.offensePlay.players[0];
+  const qb = getPrimaryQB();
   if (!qb) return;
 
   const ball = document.createElement('div');
@@ -1593,7 +1635,7 @@ function renderRoutesAndCoverage() {
 
     // B. Straight Pass Arrow from QB to passTargetPos (Clean dashed trajectory)
     if (state.playType === 'pass') {
-      const qb = state.offensePlay.players.find(p => p.type === 'QB') || state.offensePlay.players[0];
+      const qb = getPrimaryQB();
       if (qb) {
         const qbStart = getFinalPreSnapPos(qb);
         const passArrow = document.createElementNS(ns, 'line');
@@ -2045,7 +2087,7 @@ function getActiveOptionContext() {
     const step = state.runSequence[i];
     const optType = step.optionType || (step.isOption ? 'option' : 'none');
     if (optType === 'option' || optType === 'rpo') {
-      const qb = state.offensePlay ? state.offensePlay.players.find(p => p.type === 'QB') : null;
+      const qb = getPrimaryQB();
       const fromP = state.offensePlay ? state.offensePlay.players.find(p => p.id === step.from) : qb;
       const toP = state.offensePlay ? state.offensePlay.players.find(p => p.id === step.to) : null;
       const exT = (exchangeTimes[i] != null) ? exchangeTimes[i] : 0.25;
@@ -2160,7 +2202,7 @@ function getRunPlayDefenderBaseTrajectory(p, t, speed, getBasePosAtT) {
     }
 
     // From posAtReactEnd, pursue current actual ball carrier (ground carrier before pass)
-    const qb = state.offensePlay ? state.offensePlay.players.find(op => op.type === 'QB') : null;
+    const qb = getPrimaryQB();
     const groundCarrier = getRunPlayBallCarrierAt(t) || qb;
     const groundPos = groundCarrier ? getOffensePosAt(groundCarrier, t) : null;
     const ballPos = {
@@ -2202,7 +2244,7 @@ function getRunPlayDefenderBaseTrajectory(p, t, speed, getBasePosAtT) {
     return getBasePosAtT(t);
   }
   const posAtRelease = getBasePosAtT(releaseTime);
-  const qb = state.offensePlay ? state.offensePlay.players.find(op => op.type === 'QB') : null;
+  const qb = getPrimaryQB();
   const groundCarrier = getRunPlayBallCarrierAt(t) || qb;
   const groundPos = groundCarrier ? getOffensePosAt(groundCarrier, t) : null;
   const ballPos = {
@@ -2331,7 +2373,7 @@ function getDefensePosAt(p, t) {
 
   // ── 1. Pass Rush / Blitz ──
   if (p.coverage === 'rush') {
-    const qb = state.offensePlay ? state.offensePlay.players.find(op => op.type === 'QB') : null;
+    const qb = getPrimaryQB();
     const qbX = qb ? qb.x : 50;
     const qbY = qb ? qb.y : 76;
 
@@ -2642,7 +2684,7 @@ function getDefBasePosAt(p, t) {
 
 function getBallCarrierPos(t) {
   if (!state.offensePlay) return { x: 50, y: 65 };
-  const qb = state.offensePlay.players.find(p => p.type === 'QB') || state.offensePlay.players[0];
+  const qb = getPrimaryQB();
 
   if (state.playType === 'run') {
     const rpo = state.rpoPassState;
@@ -3325,9 +3367,22 @@ function applyPlayerPositionChange(side, playerId, newType, newLabel) {
     : state.defensePlay.players.find(p => p.id === playerId);
   if (!player) return;
 
+  const wasQB = (player.type === 'QB') || player.isOriginalQB || (player.id === 'QB');
+
   player.type = newType;
 
   if (side === 'offense') {
+    if (wasQB) {
+      player.isOriginalQB = true; // 元々QBだった人を記憶！ポジションを変えてもそのままQB扱い
+    }
+    if (newType === 'QB') {
+      // 別の選手が新しくQBに設定された場合
+      state.offensePlay.players.forEach(p => {
+        if (p.id !== playerId) p.isOriginalQB = false;
+      });
+      player.isOriginalQB = true;
+    }
+
     if (newType === 'WR') {
       const existingWRs = state.offensePlay.players.filter(p => p.type === 'WR' && p.id !== playerId);
       player.label = `WR${existingWRs.length + 1}`;
@@ -3544,7 +3599,7 @@ function clearPlayerRoute(playerId) {
 
 function setBallCarrier(playerId) {
   state.ballCarrierId = playerId;
-  const qb = state.offensePlay ? state.offensePlay.players.find(p => p.type === 'QB') : null;
+  const qb = getPrimaryQB();
   const qbId = qb ? qb.id : 'QB';
   if (playerId === qbId) {
     state.runSequence = [
@@ -3670,7 +3725,7 @@ function calculateEffectiveRunExchangeTimes(reportErrors = false) {
   const minIntervalT = 1.0 / animDur; // 1.0 second minimum interval between exchanges
 
   let currentHolderId = 'QB';
-  const qb = state.offensePlay.players.find(p => p.type === 'QB');
+  const qb = getPrimaryQB();
   if (qb) currentHolderId = qb.id;
 
   for (let sIdx = 0; sIdx < state.runSequence.length; sIdx++) {
@@ -3942,7 +3997,7 @@ function startPlay() {
 
       // 2. RPO (Run Pass Option from QB)
       if (optType === 'rpo' && dec === 'pass') {
-        const qb = state.offensePlay.players.find(p => p.type === 'QB') || state.offensePlay.players[0];
+        const qb = getPrimaryQB();
         const meshT = (state.runExchangeTimes && state.runExchangeTimes[i] != null) ? state.runExchangeTimes[i] : 0.25;
         const userThrowT = state.throwTime || (state.throwTimingSec ? state.throwTimingSec / state.anim.duration : 0.4);
         const minThrowT = meshT + (0.25 / state.anim.duration);
@@ -4083,7 +4138,7 @@ function renderRunSequenceUI() {
   container.innerHTML = '';
   const availableReceivers = state.offensePlay.players.filter(p => p.type !== 'OL' && p.type !== 'C');
 
-  let prevCarrier = state.offensePlay.players.find(p => p.type === 'QB') || { id: 'QB', label: 'QB' };
+  let prevCarrier = getPrimaryQB() || { id: 'QB', label: 'QB' };
 
   state.runSequence.forEach((step, idx) => {
     const isPass = step.type === 'pass';
@@ -4284,7 +4339,7 @@ function setRunSequenceOption(idx, optionType) {
 /* ─── Auto Setup for Run Play (RB-QB Crossing & Blockers) ────── */
 function setupRunPlayMode() {
   if (!state.offensePlay) return;
-  const qb = state.offensePlay.players.find(p => p.type === 'QB') || state.offensePlay.players[0];
+  const qb = getPrimaryQB();
   const rb = state.offensePlay.players.find(p => p.type === 'RB') || state.offensePlay.players.find(p => p.id !== qb.id);
   if (!qb || !rb) return;
 
@@ -5710,7 +5765,7 @@ function generatePlayThumbnailSvg(play, side, opts = {}) {
         s += `<circle cx="${last.x}" cy="${last.y}" r="0.9" fill="${col}"/>`;
       });
       if (play.playType === 'pass' && play.passTargetPos) {
-        const qb = play.players.find(p => p.type === 'QB');
+        const qb = getPrimaryQB(play);
         if (qb) s += `<line x1="${qb.x}" y1="${qb.y}" x2="${play.passTargetPos.x}" y2="${play.passTargetPos.y}" stroke="#ffffff" stroke-width="0.5" stroke-dasharray="1.2,1"/>`;
       }
     }
@@ -5747,6 +5802,8 @@ function loadPlayIntoDesigner(play) {
 
   if (side === 'offense') {
     state.offensePlay = JSON.parse(JSON.stringify(play));
+    const origQB = state.offensePlay.players.find(p => p.type === 'QB' || p.id === 'QB' || p.isOriginalQB);
+    if (origQB) origQB.isOriginalQB = true;
     state.playType = play.playType || 'pass';
     const throwSec = play.throwTimingSec || (play.throwTime > 1.0 ? play.throwTime : (play.throwTime ? play.throwTime * state.anim.duration : 2.0));
     setThrowTiming(throwSec);
